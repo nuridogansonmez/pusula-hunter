@@ -1,0 +1,10 @@
+{
+  "name": "datahunter",
+  "version": "1.0.0",
+  "description": "Google Maps business data scraper",
+  "scripts": {
+    "start": "cd backend && node server.js",
+    "setup": "cd backend && npm install && npx playwright install chromium && cd ../frontend && npm install && npm run build",
+    "dev": "cd backend && node --watch server.js"
+  }
+}

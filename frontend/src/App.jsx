@@ -1,0 +1,729 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import './App.css';
+
+const API = 'http://localhost:3001/api';
+const WS_URL = 'ws://localhost:3001';
+
+const statusLabels = {
+  pending: 'Bekliyor',
+  running: 'Çalışıyor',
+  completed: 'Tamamlandı',
+  cancelled: 'İptal Edildi',
+  paused: 'Duraklatıldı',
+  error: 'Hata'
+};
+
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m} dk ${s} sn`;
+}
+
+function formatPhone(phone) {
+  if (!phone) return '';
+  let cleaned = phone.replace(/[\s\-\(\)]/g, '');
+  if (cleaned.startsWith('0')) cleaned = '90' + cleaned.slice(1);
+  if (!cleaned.startsWith('+') && !cleaned.startsWith('90')) cleaned = '90' + cleaned;
+  if (cleaned.startsWith('+')) cleaned = cleaned.slice(1);
+  return cleaned;
+}
+
+function openWhatsApp(phone, message) {
+  const formatted = formatPhone(phone);
+  if (!formatted) return;
+  const encoded = encodeURIComponent(message || '');
+  window.open(`https://wa.me/${formatted}?text=${encoded}`, '_blank');
+}
+
+function App() {
+  const [page, setPage] = useState('data-hunt');
+  const [campaigns, setCampaigns] = useState([]);
+  const [businesses, setBusinesses] = useState({});
+  const [expandedCampaign, setExpandedCampaign] = useState(null);
+  const [logs, setLogs] = useState({});
+  const [stats, setStats] = useState({ totalCampaigns: 0, totalBusinesses: 0, activeCampaigns: 0 });
+  const [searchQueue, setSearchQueue] = useState('');
+  const [dataSearch, setDataSearch] = useState('');
+  const [selectedCampaignData, setSelectedCampaignData] = useState(null);
+  const [websiteFilter, setWebsiteFilter] = useState('all');
+
+  // WhatsApp state
+  const [wpMessage, setWpMessage] = useState('');
+  const [wpSentList, setWpSentList] = useState(new Set());
+  const [showWpPanel, setShowWpPanel] = useState(false);
+
+  // Form state
+  const [formName, setFormName] = useState('');
+  const [formKeyword, setFormKeyword] = useState('');
+  const [formCity, setFormCity] = useState('');
+  const [formDistricts, setFormDistricts] = useState('');
+
+  const wsRef = useRef(null);
+  const logEndRef = useRef(null);
+
+  const fetchCampaigns = useCallback(async () => {
+    const res = await fetch(`${API}/campaigns`);
+    const data = await res.json();
+    setCampaigns(data);
+  }, []);
+
+  const fetchStats = useCallback(async () => {
+    const res = await fetch(`${API}/stats`);
+    const data = await res.json();
+    setStats(data);
+  }, []);
+
+  useEffect(() => {
+    fetchCampaigns();
+    fetchStats();
+    const saved = localStorage.getItem('pusula_wp_message');
+    if (saved) setWpMessage(saved);
+    const sentRaw = localStorage.getItem('pusula_wp_sent');
+    if (sentRaw) setWpSentList(new Set(JSON.parse(sentRaw)));
+  }, [fetchCampaigns, fetchStats]);
+
+  useEffect(() => {
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'log') {
+        setLogs(prev => {
+          const campaignLogs = prev[msg.data.campaignId] || [];
+          return { ...prev, [msg.data.campaignId]: [...campaignLogs.slice(-200), msg.data] };
+        });
+      }
+
+      if (msg.type === 'campaign_status' || msg.type === 'campaign_created' || msg.type === 'campaign_deleted') {
+        fetchCampaigns();
+        fetchStats();
+      }
+
+      if (msg.type === 'business_found') {
+        setBusinesses(prev => {
+          const list = prev[msg.data.campaignId] || [];
+          return { ...prev, [msg.data.campaignId]: [...list, msg.data] };
+        });
+        fetchStats();
+      }
+    };
+
+    ws.onclose = () => setTimeout(() => {
+      wsRef.current = new WebSocket(WS_URL);
+    }, 3000);
+
+    return () => ws.close();
+  }, [fetchCampaigns, fetchStats]);
+
+  const saveWpMessage = (msg) => {
+    setWpMessage(msg);
+    localStorage.setItem('pusula_wp_message', msg);
+  };
+
+  const markAsSent = (phone) => {
+    const newSet = new Set(wpSentList);
+    newSet.add(formatPhone(phone));
+    setWpSentList(newSet);
+    localStorage.setItem('pusula_wp_sent', JSON.stringify([...newSet]));
+  };
+
+  const sendWhatsApp = (business) => {
+    const phone = business.phone || business.mobile;
+    if (!phone) return;
+    let msg = wpMessage;
+    msg = msg.replace(/\{isletme\}/gi, business.name || '');
+    msg = msg.replace(/\{telefon\}/gi, phone || '');
+    msg = msg.replace(/\{adres\}/gi, business.address || '');
+    msg = msg.replace(/\{kategori\}/gi, business.category || '');
+    openWhatsApp(phone, msg);
+    markAsSent(phone);
+  };
+
+  const addCampaign = async (e) => {
+    e.preventDefault();
+    if (!formName || !formKeyword) return;
+
+    const districts = formDistricts ? formDistricts.split(',').map(d => d.trim()).filter(Boolean) : [];
+    await fetch(`${API}/campaigns`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: formName,
+        keyword: formKeyword,
+        city: formCity,
+        districts
+      })
+    });
+    setFormName('');
+    setFormKeyword('');
+    setFormCity('');
+    setFormDistricts('');
+    fetchCampaigns();
+  };
+
+  const startCampaign = async (id) => {
+    await fetch(`${API}/campaigns/${id}/start`, { method: 'POST' });
+    fetchCampaigns();
+  };
+
+  const pauseCampaign = async (id) => {
+    await fetch(`${API}/campaigns/${id}/pause`, { method: 'POST' });
+    fetchCampaigns();
+  };
+
+  const resumeCampaign = async (id) => {
+    await fetch(`${API}/campaigns/${id}/resume`, { method: 'POST' });
+    fetchCampaigns();
+  };
+
+  const cancelCampaign = async (id) => {
+    await fetch(`${API}/campaigns/${id}/cancel`, { method: 'POST' });
+    fetchCampaigns();
+  };
+
+  const deleteCampaign = async (id) => {
+    if (!confirm('Bu kampanyayı silmek istediğinize emin misiniz?')) return;
+    await fetch(`${API}/campaigns/${id}`, { method: 'DELETE' });
+    fetchCampaigns();
+  };
+
+  const startAll = async () => {
+    await fetch(`${API}/campaigns/start-all`, { method: 'POST' });
+    fetchCampaigns();
+  };
+
+  const exportCampaign = (id, filter) => {
+    const filterParam = filter ? `?filter=${filter}` : '';
+    window.open(`${API}/campaigns/${id}/export${filterParam}`, '_blank');
+  };
+
+  const loadBusinesses = async (campaignId) => {
+    const res = await fetch(`${API}/campaigns/${campaignId}/businesses`);
+    const data = await res.json();
+    setBusinesses(prev => ({ ...prev, [campaignId]: data }));
+  };
+
+  const viewCampaignData = async (campaign) => {
+    setSelectedCampaignData(campaign);
+    setPage('raw-data');
+    await loadBusinesses(campaign.id);
+  };
+
+  const toggleCampaign = (id) => {
+    if (expandedCampaign === id) {
+      setExpandedCampaign(null);
+    } else {
+      setExpandedCampaign(id);
+      loadBusinesses(id);
+    }
+  };
+
+  const filteredCampaigns = campaigns.filter(c =>
+    c.name.toLowerCase().includes(searchQueue.toLowerCase()) ||
+    c.keyword.toLowerCase().includes(searchQueue.toLowerCase())
+  );
+
+  const currentBusinesses = selectedCampaignData
+    ? (businesses[selectedCampaignData.id] || [])
+    : Object.values(businesses).flat();
+
+  const filteredBusinesses = currentBusinesses.filter(b => {
+    if (dataSearch && !(
+      b.name?.toLowerCase().includes(dataSearch.toLowerCase()) ||
+      b.phone?.includes(dataSearch) ||
+      b.email?.toLowerCase().includes(dataSearch.toLowerCase())
+    )) return false;
+
+    if (websiteFilter === 'no-website' && b.website) return false;
+    if (websiteFilter === 'has-website' && !b.website) return false;
+
+    return true;
+  });
+
+  const noWebsiteCount = currentBusinesses.filter(b => !b.website).length;
+  const hasWebsiteCount = currentBusinesses.filter(b => b.website).length;
+  const businessesWithPhone = filteredBusinesses.filter(b => b.phone || b.mobile);
+
+  return (
+    <div className="app">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sidebar-logo">
+          <div className="logo-icon">P</div>
+          <h1>Pusula Hunter</h1>
+        </div>
+
+        <div className="sidebar-section">Veri Toplama</div>
+        <div className={`sidebar-item ${page === 'dashboard' ? 'active' : ''}`} onClick={() => setPage('dashboard')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Dashboard
+        </div>
+        <div className={`sidebar-item ${page === 'data-hunt' ? 'active' : ''}`} onClick={() => setPage('data-hunt')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          Data Avı
+        </div>
+        <div className={`sidebar-item ${page === 'raw-data' && websiteFilter === 'all' ? 'active' : ''}`} onClick={() => { setPage('raw-data'); setSelectedCampaignData(null); setWebsiteFilter('all'); }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+          Ham Datalar
+        </div>
+
+        <div className="sidebar-section">Pazarlama</div>
+        <div className={`sidebar-item ${page === 'raw-data' && websiteFilter === 'no-website' ? 'active' : ''}`} onClick={() => { setPage('raw-data'); setSelectedCampaignData(null); setWebsiteFilter('no-website'); }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+          Web Sitesi Olmayanlar
+        </div>
+        <div className={`sidebar-item ${page === 'whatsapp' ? 'active' : ''}`} onClick={() => setPage('whatsapp')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          WhatsApp Mesaj
+        </div>
+      </div>
+
+      {/* Main */}
+      <div className="main-content">
+        {page === 'dashboard' && (
+          <>
+            <h2 style={{ marginBottom: 20 }}>Dashboard</h2>
+            <div className="dashboard-stats">
+              <div className="stat-card">
+                <h3>Toplam Kampanya</h3>
+                <div className="value">{stats.totalCampaigns}</div>
+              </div>
+              <div className="stat-card">
+                <h3>Toplam Veri</h3>
+                <div className="value">{stats.totalBusinesses}</div>
+              </div>
+              <div className="stat-card">
+                <h3>Aktif Kampanya</h3>
+                <div className="value">{stats.activeCampaigns}</div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {page === 'data-hunt' && (
+          <>
+            {/* New Campaign Form */}
+            <form className="campaign-form" onSubmit={addCampaign}>
+              <h2>Yeni Kampanya</h2>
+              <div className="form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Kampanya Adi</label>
+                  <input placeholder="Kampanya Adi" value={formName} onChange={e => setFormName(e.target.value)} required />
+                </div>
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Arama Terimi</label>
+                  <input placeholder="Arama Terimi (or: dis klinigi)" value={formKeyword} onChange={e => setFormKeyword(e.target.value)} required />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Il</label>
+                  <input placeholder="Il (or: Istanbul)" value={formCity} onChange={e => setFormCity(e.target.value)} />
+                </div>
+                <div className="form-group">
+                  <label>Ilceler (virgulle ayirin)</label>
+                  <input placeholder="Ilceler (or: Kadikoy, Besiktas, Atasehir)" value={formDistricts} onChange={e => setFormDistricts(e.target.value)} />
+                </div>
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>&nbsp;</label>
+                  <button type="submit" className="btn btn-primary">+ Kuyruga Ekle</button>
+                </div>
+              </div>
+            </form>
+
+            {/* Campaign Queue */}
+            <div className="queue-header">
+              <h2>
+                Kampanya Kuyrugu <span className="count">{campaigns.length} kampanya</span>
+              </h2>
+              <div className="queue-actions">
+                <input
+                  className="search-input"
+                  placeholder="Kuyrukta ara..."
+                  value={searchQueue}
+                  onChange={e => setSearchQueue(e.target.value)}
+                />
+                <button className="btn btn-primary" onClick={startAll}>
+                  Tumunu Baslat
+                </button>
+              </div>
+            </div>
+
+            {filteredCampaigns.map((campaign, idx) => (
+              <div key={campaign.id} className="campaign-card">
+                <div className="campaign-header" onClick={() => toggleCampaign(campaign.id)}>
+                  <span className="campaign-number">#{idx + 1}</span>
+                  <span className={`campaign-toggle ${expandedCampaign === campaign.id ? 'open' : ''}`}>
+                    &#9660;
+                  </span>
+                  <span className="campaign-name">{campaign.name}</span>
+                  <span className="campaign-tag tag-keyword">{campaign.keyword}</span>
+                  {campaign.city && <span className="campaign-tag tag-city">{campaign.city}</span>}
+                  {campaign.districts && JSON.parse(campaign.districts || '[]').length > 0 && (
+                    <span className="campaign-tag tag-district">
+                      {JSON.parse(campaign.districts).length} ilce
+                    </span>
+                  )}
+
+                  <div className={`campaign-status status-${campaign.status}`}>
+                    <span className="status-dot"></span>
+                    {statusLabels[campaign.status] || campaign.status}
+                  </div>
+
+                  <div className="campaign-controls" onClick={e => e.stopPropagation()}>
+                    {(campaign.status === 'pending' || campaign.status === 'cancelled' || campaign.status === 'error') && (
+                      <button className="btn-icon" onClick={() => startCampaign(campaign.id)} title="Baslat">&#9654;</button>
+                    )}
+                    {campaign.status === 'running' && (
+                      <button className="btn-icon" onClick={() => pauseCampaign(campaign.id)} title="Duraklat">&#9208;</button>
+                    )}
+                    {campaign.status === 'paused' && (
+                      <button className="btn-icon" onClick={() => resumeCampaign(campaign.id)} title="Devam Et">&#9654;</button>
+                    )}
+                    {(campaign.status === 'running' || campaign.status === 'paused') && (
+                      <button className="btn-icon" onClick={() => cancelCampaign(campaign.id)} title="Iptal">&#9209;</button>
+                    )}
+                    {campaign.status === 'completed' && campaign.total_found > 0 && (
+                      <>
+                        <button className="btn-icon" onClick={() => viewCampaignData(campaign)} title="Verileri Gor">&#128202;</button>
+                        <button className="btn-icon" onClick={() => exportCampaign(campaign.id)} title="Excel Indir">&#128229;</button>
+                      </>
+                    )}
+                    <button className="btn-icon" onClick={() => deleteCampaign(campaign.id)} title="Sil">&#128465;</button>
+                  </div>
+                </div>
+
+                {expandedCampaign === campaign.id && (
+                  <div className="campaign-body">
+                    <div className="campaign-stats">
+                      <div className="stat">
+                        <span className="stat-value">{campaign.total_found}</span> veri bulundu
+                      </div>
+                      <div className="stat">
+                        Toplam sure: {formatDuration(campaign.duration_seconds || 0)}
+                      </div>
+                    </div>
+
+                    {logs[campaign.id] && logs[campaign.id].length > 0 && (
+                      <div className="live-log">
+                        <h4>Canli Log</h4>
+                        {logs[campaign.id].map((log, i) => (
+                          <div key={i} className="log-entry">
+                            <span className="log-time">{log.timestamp}</span>
+                            <span className={`log-message log-${log.type}`}>{log.message}</span>
+                          </div>
+                        ))}
+                        <div ref={logEndRef} />
+                      </div>
+                    )}
+
+                    {businesses[campaign.id] && businesses[campaign.id].length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>
+                            Bulunan Isletmeler ({businesses[campaign.id].length})
+                          </span>
+                          <button className="btn btn-sm btn-secondary" onClick={() => viewCampaignData(campaign)}>
+                            Tumunu Gor
+                          </button>
+                        </div>
+                        <div style={{ overflowX: 'auto' }}>
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>#</th>
+                                <th>Isletme Adi</th>
+                                <th>Telefon</th>
+                                <th>Web Sitesi</th>
+                                <th>Puan</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {businesses[campaign.id].slice(0, 5).map((b, i) => (
+                                <tr key={i}>
+                                  <td>{i + 1}</td>
+                                  <td>{b.name}</td>
+                                  <td className="phone-cell">{b.phone}</td>
+                                  <td className="website-cell">
+                                    {b.website && <a href={b.website} target="_blank" rel="noreferrer">{b.website.substring(0, 30)}...</a>}
+                                  </td>
+                                  <td>{b.rating > 0 ? `${b.rating}` : ''}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {filteredCampaigns.length === 0 && (
+              <div className="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <p>Henuz kampanya eklenmemis. Yukaridan yeni kampanya ekleyin.</p>
+              </div>
+            )}
+          </>
+        )}
+
+        {page === 'raw-data' && (
+          <div className="data-table-container">
+            <div className="data-table-header">
+              <h2>
+                {websiteFilter === 'no-website' ? (
+                  <>Web Sitesi Olmayanlar <span className="record-count" style={{ background: '#ef4444' }}>{filteredBusinesses.length} kayit</span></>
+                ) : selectedCampaignData ? (
+                  <>
+                    {selectedCampaignData.name}
+                    <span className="record-count">{filteredBusinesses.length} kayit</span>
+                  </>
+                ) : (
+                  <>Tum Veriler <span className="record-count">{filteredBusinesses.length} kayit</span></>
+                )}
+              </h2>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div className="filter-tabs">
+                  <button className={`filter-tab ${websiteFilter === 'all' ? 'active' : ''}`} onClick={() => setWebsiteFilter('all')}>
+                    Tumu ({currentBusinesses.length})
+                  </button>
+                  <button className={`filter-tab no-site ${websiteFilter === 'no-website' ? 'active' : ''}`} onClick={() => setWebsiteFilter('no-website')}>
+                    Sitesi Yok ({noWebsiteCount})
+                  </button>
+                  <button className={`filter-tab has-site ${websiteFilter === 'has-website' ? 'active' : ''}`} onClick={() => setWebsiteFilter('has-website')}>
+                    Sitesi Var ({hasWebsiteCount})
+                  </button>
+                </div>
+                <input
+                  className="search-input"
+                  placeholder="Ara..."
+                  value={dataSearch}
+                  onChange={e => setDataSearch(e.target.value)}
+                />
+                {selectedCampaignData && (
+                  <button className="btn btn-sm btn-primary" onClick={() => exportCampaign(selectedCampaignData.id, websiteFilter !== 'all' ? websiteFilter : undefined)}>
+                    Excel Indir {websiteFilter === 'no-website' ? '(Sitesi Yok)' : ''}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* WhatsApp message bar */}
+            {showWpPanel && (
+              <div className="wp-panel">
+                <div className="wp-panel-header">
+                  <h3>WhatsApp Mesaj Sablonu</h3>
+                  <button className="btn-icon" onClick={() => setShowWpPanel(false)}>&#10005;</button>
+                </div>
+                <textarea
+                  className="wp-textarea"
+                  placeholder={"Merhaba {isletme},\n\nSize ozel bir teklifimiz var...\n\nKullanilabilir degiskenler: {isletme}, {telefon}, {adres}, {kategori}"}
+                  value={wpMessage}
+                  onChange={e => saveWpMessage(e.target.value)}
+                  rows={4}
+                />
+                <div className="wp-panel-info">
+                  <span>Degiskenler: <code>{'{isletme}'}</code> <code>{'{telefon}'}</code> <code>{'{adres}'}</code> <code>{'{kategori}'}</code></span>
+                  <span className="wp-sent-count">{wpSentList.size} kisiye gonderildi</span>
+                </div>
+              </div>
+            )}
+
+            <div className="wp-toolbar">
+              <button className={`btn btn-sm ${showWpPanel ? 'btn-secondary' : 'btn-whatsapp'}`} onClick={() => setShowWpPanel(!showWpPanel)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                {showWpPanel ? 'Sablonu Gizle' : 'WP Mesaj Ayarla'}
+              </button>
+              {wpMessage && (
+                <span className="wp-ready-badge">Sablon hazir - tablodaki WP butonlarina tiklayin</span>
+              )}
+            </div>
+
+            <div style={{ overflowX: 'auto', maxHeight: 'calc(100vh - 220px)' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Isletme Adi</th>
+                    <th>Telefon</th>
+                    <th>Cep Tel.</th>
+                    <th>Web Sitesi</th>
+                    <th>E-Posta</th>
+                    <th>Adres</th>
+                    <th>Puan</th>
+                    <th>Yorum</th>
+                    <th>Kategori</th>
+                    <th>WP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredBusinesses.map((b, i) => {
+                    const phone = b.phone || b.mobile;
+                    const isSent = phone && wpSentList.has(formatPhone(phone));
+                    return (
+                      <tr key={b.id || i} className={!b.website ? 'row-no-website' : ''}>
+                        <td>{i + 1}</td>
+                        <td title={b.name}>{b.name}</td>
+                        <td className="phone-cell">{b.phone || ''}</td>
+                        <td className="mobile-cell">{b.mobile || ''}</td>
+                        <td className="website-cell">
+                          {b.website ? <a href={b.website} target="_blank" rel="noreferrer">{b.website.substring(0, 25)}...</a> : <span className="no-website-badge">Sitesi Yok</span>}
+                        </td>
+                        <td className="email-cell">{b.email || ''}</td>
+                        <td title={b.address}>{b.address ? b.address.substring(0, 30) + '...' : ''}</td>
+                        <td>{b.rating > 0 ? `${b.rating}` : ''}</td>
+                        <td>{b.review_count || ''}</td>
+                        <td>{b.category || ''}</td>
+                        <td>
+                          {phone ? (
+                            <button
+                              className={`wp-send-btn ${isSent ? 'wp-sent' : ''}`}
+                              onClick={() => sendWhatsApp(b)}
+                              title={isSent ? 'Gonderildi - tekrar gonder' : 'WhatsApp ile mesaj gonder'}
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                              {isSent ? 'Gonderildi' : 'Gonder'}
+                            </button>
+                          ) : (
+                            <span style={{ color: '#94a3b8', fontSize: 12 }}>Tel yok</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {filteredBusinesses.length === 0 && (
+                <div className="empty-state">
+                  <p>Henuz veri yok. Kampanya calistirarak veri toplayin.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* WhatsApp dedicated page */}
+        {page === 'whatsapp' && (
+          <div>
+            <h2 style={{ marginBottom: 20 }}>WhatsApp Mesaj Merkezi</h2>
+
+            <div className="campaign-form">
+              <h2 style={{ fontSize: 16 }}>Mesaj Sablonu</h2>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                Asagidaki sablonu yazin. Degiskenler otomatik olarak isletme bilgileriyle degistirilir.
+              </p>
+              <textarea
+                className="wp-textarea"
+                placeholder={"Merhaba {isletme},\n\nIsletmeniz icin profesyonel bir web sitesi olusturmak ister misiniz?\n\nDetayli bilgi icin bize ulasin.\n\nKullanilabilir degiskenler: {isletme}, {telefon}, {adres}, {kategori}"}
+                value={wpMessage}
+                onChange={e => saveWpMessage(e.target.value)}
+                rows={6}
+              />
+              <div className="wp-panel-info" style={{ marginTop: 8 }}>
+                <span>Degiskenler: <code>{'{isletme}'}</code> <code>{'{telefon}'}</code> <code>{'{adres}'}</code> <code>{'{kategori}'}</code></span>
+              </div>
+            </div>
+
+            <div className="dashboard-stats" style={{ marginTop: 20 }}>
+              <div className="stat-card">
+                <h3>Gonderilen Mesaj</h3>
+                <div className="value" style={{ color: '#25d366' }}>{wpSentList.size}</div>
+              </div>
+              <div className="stat-card">
+                <h3>Telefonlu Isletme</h3>
+                <div className="value">{Object.values(businesses).flat().filter(b => b.phone || b.mobile).length}</div>
+              </div>
+              <div className="stat-card">
+                <h3>Sitesiz + Telefonlu</h3>
+                <div className="value" style={{ color: '#ef4444' }}>{Object.values(businesses).flat().filter(b => !b.website && (b.phone || b.mobile)).length}</div>
+              </div>
+            </div>
+
+            {wpMessage && (
+              <div className="wp-preview" style={{ marginTop: 20 }}>
+                <h3 style={{ fontSize: 14, marginBottom: 8 }}>Mesaj Onizleme</h3>
+                <div className="wp-bubble">
+                  {wpMessage
+                    .replace(/\{isletme\}/gi, 'Ornek Isletme')
+                    .replace(/\{telefon\}/gi, '0532 123 45 67')
+                    .replace(/\{adres\}/gi, 'Istanbul, Kadikoy')
+                    .replace(/\{kategori\}/gi, 'Restoran')
+                  }
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ fontSize: 16 }}>Hizli Gonder (Sitesi Olmayanlar)</h3>
+                {wpSentList.size > 0 && (
+                  <button className="btn btn-sm btn-secondary" onClick={() => { setWpSentList(new Set()); localStorage.removeItem('pusula_wp_sent'); }}>
+                    Gonderi Gecmisini Temizle
+                  </button>
+                )}
+              </div>
+              <div className="data-table-container">
+                <div style={{ overflowX: 'auto', maxHeight: 400 }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Isletme Adi</th>
+                        <th>Telefon</th>
+                        <th>Kategori</th>
+                        <th>Adres</th>
+                        <th>Durum</th>
+                        <th>Gonder</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.values(businesses).flat()
+                        .filter(b => !b.website && (b.phone || b.mobile))
+                        .map((b, i) => {
+                          const phone = b.phone || b.mobile;
+                          const isSent = wpSentList.has(formatPhone(phone));
+                          return (
+                            <tr key={b.id || i}>
+                              <td>{i + 1}</td>
+                              <td>{b.name}</td>
+                              <td className="phone-cell">{phone}</td>
+                              <td>{b.category || ''}</td>
+                              <td title={b.address}>{b.address ? b.address.substring(0, 25) + '...' : ''}</td>
+                              <td>
+                                {isSent ? (
+                                  <span className="wp-status-sent">Gonderildi</span>
+                                ) : (
+                                  <span className="wp-status-pending">Bekliyor</span>
+                                )}
+                              </td>
+                              <td>
+                                <button
+                                  className={`wp-send-btn ${isSent ? 'wp-sent' : ''}`}
+                                  onClick={() => sendWhatsApp(b)}
+                                  disabled={!wpMessage}
+                                  title={!wpMessage ? 'Once mesaj sablonu yazin' : ''}
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                                  {isSent ? 'Tekrar' : 'Gonder'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
