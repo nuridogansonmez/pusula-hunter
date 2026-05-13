@@ -14,6 +14,7 @@
   flex-direction: column;
   height: 100vh;
   overflow-y: auto;
+  justify-content: flex-start;
 }
 
 .sidebar-logo {
@@ -81,6 +82,104 @@
   width: 18px;
   height: 18px;
   flex-shrink: 0;
+}
+
+/* Update panel */
+.sidebar-update {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.update-check-btn {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+
+.update-check-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-light);
+}
+
+.update-status {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+}
+
+.update-status.ok { color: var(--primary); }
+.update-status.checking { color: var(--text-secondary); }
+.update-status.updating { color: var(--info); flex-direction: column; align-items: flex-start; }
+.update-status.error { color: var(--danger); }
+
+.update-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.update-available {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.update-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #92400e;
+  background: #fef3c7;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.update-apply-btn {
+  width: 100%;
+  padding: 8px;
+  background: var(--primary);
+  color: white;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.update-apply-btn:hover { background: var(--primary-dark); }
+
+.update-skip-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  font-family: inherit;
+  text-decoration: underline;
 }
 
 /* Main Content */

@@ -38,6 +38,8 @@ function openWhatsApp(phone, message) {
 function App() {
   const [page, setPage] = useState('data-hunt');
   const [campaigns, setCampaigns] = useState([]);
+  const [updateStatus, setUpdateStatus] = useState(null); // null | 'checking' | 'available' | 'none' | 'updating' | 'done' | 'error'
+  const [updateMessage, setUpdateMessage] = useState('');
   const [businesses, setBusinesses] = useState({});
   const [expandedCampaign, setExpandedCampaign] = useState(null);
   const [logs, setLogs] = useState({});
@@ -107,6 +109,18 @@ function App() {
           return { ...prev, [msg.data.campaignId]: [...list, msg.data] };
         });
         fetchStats();
+      }
+
+      if (msg.type === 'update_status') {
+        setUpdateMessage(msg.data.message);
+        if (msg.data.step === 'done') {
+          setUpdateStatus('done');
+          setTimeout(() => window.location.reload(), 2000);
+        } else if (msg.data.step === 'error') {
+          setUpdateStatus('error');
+        } else {
+          setUpdateStatus('updating');
+        }
       }
     };
 
@@ -194,6 +208,32 @@ function App() {
     fetchCampaigns();
   };
 
+  const checkUpdate = async () => {
+    setUpdateStatus('checking');
+    setUpdateMessage('GitHub kontrol ediliyor...');
+    try {
+      const res = await fetch(`${API}/update/check`);
+      const data = await res.json();
+      if (data.hasUpdate) {
+        setUpdateStatus('available');
+        setUpdateMessage(`${data.commits.length} yeni güncelleme mevcut`);
+      } else {
+        setUpdateStatus('none');
+        setUpdateMessage('Uygulama güncel');
+        setTimeout(() => setUpdateStatus(null), 3000);
+      }
+    } catch {
+      setUpdateStatus('error');
+      setUpdateMessage('Bağlantı hatası');
+    }
+  };
+
+  const applyUpdate = async () => {
+    setUpdateStatus('updating');
+    setUpdateMessage('Güncelleme başlatılıyor...');
+    await fetch(`${API}/update/apply`, { method: 'POST' });
+  };
+
   const exportCampaign = (id, filter) => {
     const filterParam = filter ? `?filter=${filter}` : '';
     window.open(`${API}/campaigns/${id}/export${filterParam}`, '_blank');
@@ -277,6 +317,52 @@ function App() {
         <div className={`sidebar-item ${page === 'whatsapp' ? 'active' : ''}`} onClick={() => setPage('whatsapp')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
           WhatsApp Mesaj
+        </div>
+
+        <div className="sidebar-update">
+          {updateStatus === null && (
+            <button className="update-check-btn" onClick={checkUpdate}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              Güncelleme Kontrol Et
+            </button>
+          )}
+          {updateStatus === 'checking' && (
+            <div className="update-status checking">
+              <span className="update-spinner"></span> {updateMessage}
+            </div>
+          )}
+          {updateStatus === 'none' && (
+            <div className="update-status ok">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="13" height="13"><polyline points="20 6 9 17 4 12"/></svg>
+              {updateMessage}
+            </div>
+          )}
+          {updateStatus === 'available' && (
+            <div className="update-available">
+              <div className="update-badge">Yeni güncelleme!</div>
+              <button className="update-apply-btn" onClick={applyUpdate}>
+                Şimdi Güncelle
+              </button>
+              <button className="update-skip-btn" onClick={() => setUpdateStatus(null)}>Sonra</button>
+            </div>
+          )}
+          {updateStatus === 'updating' && (
+            <div className="update-status updating">
+              <span className="update-spinner"></span>
+              <span>{updateMessage}</span>
+            </div>
+          )}
+          {updateStatus === 'done' && (
+            <div className="update-status ok">
+              Tamamlandı, yenileniyor...
+            </div>
+          )}
+          {updateStatus === 'error' && (
+            <div className="update-status error">
+              {updateMessage}
+              <button onClick={() => setUpdateStatus(null)} style={{marginLeft:6,fontSize:11}}>Kapat</button>
+            </div>
+          )}
         </div>
       </div>
 

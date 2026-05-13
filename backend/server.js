@@ -9,6 +9,7 @@ import * as XLSX from 'xlsx';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { exec } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -214,6 +215,49 @@ app.get('/api/campaigns/:id/export', (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
   res.send(buffer);
+});
+
+// === UPDATE ===
+
+app.get('/api/update/check', (req, res) => {
+  const rootDir = path.join(__dirname, '..');
+  exec('git fetch && git log HEAD..origin/main --oneline', { cwd: rootDir }, (err, stdout) => {
+    if (err) return res.json({ hasUpdate: false, error: err.message });
+    const commits = stdout.trim().split('\n').filter(Boolean);
+    res.json({ hasUpdate: commits.length > 0, commits });
+  });
+});
+
+app.post('/api/update/apply', (req, res) => {
+  const rootDir = path.join(__dirname, '..');
+  res.json({ success: true, message: 'Güncelleme başladı, uygulama yeniden başlayacak...' });
+
+  broadcast('update_status', { step: 'pulling', message: 'Güncellemeler indiriliyor...' });
+
+  const steps = [
+    { cmd: 'git pull', label: 'Kod güncelleniyor...' },
+    { cmd: 'cd backend && npm install --silent', label: 'Backend paketleri güncelleniyor...' },
+    { cmd: 'cd frontend && npm install --silent && npm run build', label: 'Frontend derleniyor...' },
+  ];
+
+  let i = 0;
+  function runNext() {
+    if (i >= steps.length) {
+      broadcast('update_status', { step: 'done', message: 'Güncelleme tamamlandı! Yeniden başlatılıyor...' });
+      setTimeout(() => process.exit(0), 1500);
+      return;
+    }
+    const step = steps[i++];
+    broadcast('update_status', { step: 'running', message: step.label });
+    exec(step.cmd, { cwd: rootDir, shell: '/bin/bash' }, (err) => {
+      if (err) {
+        broadcast('update_status', { step: 'error', message: `Hata: ${err.message}` });
+        return;
+      }
+      runNext();
+    });
+  }
+  setTimeout(runNext, 500);
 });
 
 // === STATS ===
