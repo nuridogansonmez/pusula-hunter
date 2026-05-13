@@ -24,4 +24,17 @@ echo ""
 echo "  Durdurmak icin: Ctrl+C"
 echo ""
 
-node server.js
+while true; do
+  node server.js
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 0 ]; then
+    echo ""
+    echo "  Guncelleme tamamlandi, yeniden baslatiliyor..."
+    echo ""
+    sleep 2
+  else
+    echo ""
+    echo "  Sunucu kapandi (kod: $EXIT_CODE). Yeniden baslatmak icin: bash start.sh"
+    break
+  fi
+done
