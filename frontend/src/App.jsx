@@ -124,9 +124,20 @@ function App() {
       }
     };
 
-    ws.onclose = () => setTimeout(() => {
-      wsRef.current = new WebSocket(WS_URL);
-    }, 3000);
+    ws.onclose = () => {
+      setUpdateStatus(prev => {
+        if (prev === 'updating') {
+          // Server restarting after update — poll until it's back then reload
+          const poll = () => {
+            fetch(`${API}/stats`).then(() => window.location.reload()).catch(() => setTimeout(poll, 2000));
+          };
+          setTimeout(poll, 3000);
+          return 'done';
+        }
+        return prev;
+      });
+      setTimeout(() => { wsRef.current = new WebSocket(WS_URL); }, 3000);
+    };
 
     return () => ws.close();
   }, [fetchCampaigns, fetchStats]);
