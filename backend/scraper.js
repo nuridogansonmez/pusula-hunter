@@ -1,9 +1,12 @@
 import { chromium } from 'playwright';
 import db from './database.js';
 
-const SCROLL_PAUSE = 2000;
-const MAX_SCROLLS = 15;
+const MAX_SCROLLS = 50;
 const NOW_SQL = `datetime('now')`;
+
+function randomDelay(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
 
 function updateStatus(id, status) {
   db.prepare(`UPDATE campaigns SET status = ?, updated_at = ${NOW_SQL} WHERE id = ?`).run(status, id);
@@ -44,7 +47,8 @@ export class GoogleMapsScraper {
         locale: 'tr-TR',
         geolocation: { latitude: 41.0082, longitude: 28.9784 },
         permissions: ['geolocation'],
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        viewport: { width: 1280, height: 900 }
       });
 
       const page = await context.newPage();
@@ -82,6 +86,7 @@ export class GoogleMapsScraper {
       const query = `${campaign.keyword} ${district} ${campaign.city}`;
       this.log('info', `Ilce taraniyor: ${district}`);
       await this.scrapeQuery(page, campaign, query);
+      await page.waitForTimeout(randomDelay(2000, 4000));
     }
     if (!this.cancelled) {
       updateStatus(this.campaignId, 'completed');
@@ -96,13 +101,14 @@ export class GoogleMapsScraper {
     const url = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(randomDelay(4000, 6000));
 
+    // Cookie/consent dialog
     try {
       const acceptBtn = page.locator('button:has-text("Kabul"), button:has-text("Accept"), form[action*="consent"] button');
       if (await acceptBtn.first().isVisible({ timeout: 3000 })) {
         await acceptBtn.first().click();
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(randomDelay(1500, 3000));
       }
     } catch {}
 
@@ -118,53 +124,115 @@ export class GoogleMapsScraper {
       return;
     }
 
+    // --- PHASE 1: Scroll to collect all results ---
+    this.log('info', 'Sonuclar yukleniyor, liste kaydiriliyor...');
     let previousCount = 0;
+    let noChangeCount = 0;
+
     for (let i = 0; i < MAX_SCROLLS; i++) {
       if (this.cancelled) return;
       while (this.paused) {
         await new Promise(r => setTimeout(r, 1000));
       }
 
+      // Human-like scroll: small incremental steps
       await page.evaluate((sel) => {
         const feed = document.querySelector(sel);
-        if (feed) feed.scrollTop = feed.scrollHeight;
+        if (feed) {
+          const step = 300 + Math.floor(Math.random() * 400);
+          feed.scrollBy({ top: step, behavior: 'smooth' });
+        }
       }, feedSelector);
 
-      await page.waitForTimeout(SCROLL_PAUSE);
+      await page.waitForTimeout(randomDelay(1200, 2500));
+
+      // Sometimes do a bigger scroll to trigger lazy loading
+      if (i % 3 === 2) {
+        await page.evaluate((sel) => {
+          const feed = document.querySelector(sel);
+          if (feed) feed.scrollBy({ top: 800 + Math.floor(Math.random() * 600), behavior: 'smooth' });
+        }, feedSelector);
+        await page.waitForTimeout(randomDelay(2000, 3500));
+      }
 
       const currentCount = await page.locator(`${feedSelector} > div > div > a`).count();
-      this.log('info', `Scroll ${i + 1}: ${currentCount} isletme bulundu`);
+
+      if (i % 4 === 0) {
+        this.log('info', `Scroll ${i + 1}: ${currentCount} isletme bulundu`);
+      }
+
+      // Check if we've reached the end
+      const endReached = await page.evaluate(() => {
+        const texts = document.body.innerText;
+        return texts.includes('sonuna ulaştınız') ||
+               texts.includes("sonuna ulastiniz") ||
+               texts.includes("You've reached the end") ||
+               texts.includes('Daha fazla sonuç yok') ||
+               document.querySelector('span.HlvSq') !== null;
+      });
+
+      if (endReached) {
+        this.log('success', `Liste sonu tespit edildi. Toplam ${currentCount} isletme.`);
+        break;
+      }
 
       if (currentCount === previousCount) {
-        const endOfList = await page.locator('span.HlvSq, p.fontBodyMedium:has-text("sonuna ulastiniz")').count();
-        if (endOfList > 0 || i > 3) break;
+        noChangeCount++;
+        if (noChangeCount >= 4) {
+          // Try one last big scroll
+          await page.evaluate((sel) => {
+            const feed = document.querySelector(sel);
+            if (feed) feed.scrollTop = feed.scrollHeight;
+          }, feedSelector);
+          await page.waitForTimeout(3000);
+          const finalCount = await page.locator(`${feedSelector} > div > div > a`).count();
+          if (finalCount === currentCount) {
+            this.log('info', `Daha fazla sonuc yuklenmiyor. Toplam: ${finalCount}`);
+            break;
+          }
+          noChangeCount = 0;
+        }
+      } else {
+        noChangeCount = 0;
       }
       previousCount = currentCount;
     }
 
+    // Collect all links
     const links = await page.locator(`${feedSelector} > div > div > a`).evaluateAll(els =>
       els.map(el => el.getAttribute('href')).filter(Boolean)
     );
 
-    this.log('success', `Toplam ${links.length} isletme bulundu, detaylar cekiliyor...`);
+    const uniqueLinks = [...new Set(links)];
+    this.log('success', `Toplam ${uniqueLinks.length} benzersiz isletme bulundu, detaylar cekiliyor...`);
 
-    for (let i = 0; i < links.length; i++) {
+    // --- PHASE 2: Visit each business detail ---
+    for (let i = 0; i < uniqueLinks.length; i++) {
       if (this.cancelled) return;
       while (this.paused) {
         await new Promise(r => setTimeout(r, 1000));
       }
 
       try {
-        await this.scrapeBusinessDetail(page, links[i], campaign);
+        await this.scrapeBusinessDetail(page, uniqueLinks[i], campaign);
       } catch (err) {
         this.log('warning', `Isletme ${i + 1} atlandi: ${err.message}`);
       }
+
+      // Human-like delay between detail pages
+      await page.waitForTimeout(randomDelay(1500, 3500));
 
       if (i % 5 === 0) {
         this.updateDuration();
         const count = db.prepare('SELECT COUNT(*) as c FROM businesses WHERE campaign_id = ?').get(this.campaignId);
         db.prepare(`UPDATE campaigns SET total_found = ?, updated_at = ${NOW_SQL} WHERE id = ?`)
           .run(count.c, this.campaignId);
+      }
+
+      // Occasional longer pause (like a human taking a break)
+      if (i > 0 && i % 20 === 0) {
+        this.log('info', `${i}/${uniqueLinks.length} tamamlandi, kisa mola...`);
+        await page.waitForTimeout(randomDelay(4000, 7000));
       }
     }
 
@@ -179,7 +247,7 @@ export class GoogleMapsScraper {
 
   async scrapeBusinessDetail(page, url, campaign) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(randomDelay(2500, 4000));
 
     const name = await page.locator('h1').first().textContent().catch(() => '');
     if (!name) return;
