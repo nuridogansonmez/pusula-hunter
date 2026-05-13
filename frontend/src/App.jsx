@@ -319,6 +319,8 @@ function App() {
           WhatsApp Mesaj
         </div>
 
+        <div className="sidebar-version">v1.1 — Pusula Hunter</div>
+
         <div className="sidebar-update">
           {updateStatus === null && (
             <button className="update-check-btn" onClick={checkUpdate}>

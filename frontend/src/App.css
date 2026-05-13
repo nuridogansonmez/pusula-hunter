@@ -84,6 +84,15 @@
   flex-shrink: 0;
 }
 
+.sidebar-version {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-muted, #999);
+  padding: 6px 12px 0;
+  margin-top: auto;
+  opacity: 0.6;
+}
+
 /* Update panel */
 .sidebar-update {
   margin-top: auto;
