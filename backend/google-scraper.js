@@ -136,9 +136,7 @@ export class GoogleSearchScraper {
     this.log('inspect', `Araniyor: ${name}`);
 
     // Use Google Maps search instead of Google Search (avoids CAPTCHA)
-    // Add "İstanbul" to help Maps find the right location
-    const searchQuery = name.includes('stanbul') ? name : `${name} İstanbul`;
-    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
+    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(name)}`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(randomDelay(4000, 6000));
 
@@ -227,7 +225,7 @@ export class GoogleSearchScraper {
       await page.waitForTimeout(randomDelay(2000, 4000));
 
       try {
-        const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(name + ' İstanbul instagram')}&hl=tr&gl=tr`;
+        const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(name + ' instagram')}&hl=tr&gl=tr`;
         await page.goto(googleUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(randomDelay(3000, 5000));
 
