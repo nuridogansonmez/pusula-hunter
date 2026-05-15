@@ -54,6 +54,14 @@ function App() {
   const [wpSentList, setWpSentList] = useState(new Set());
   const [showWpPanel, setShowWpPanel] = useState(false);
 
+  // Import state
+  const [importFiles, setImportFiles] = useState([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importSelected, setImportSelected] = useState('');
+  const [importCampaignName, setImportCampaignName] = useState('');
+  const [importStatus, setImportStatus] = useState('');
+  const [importUploading, setImportUploading] = useState(false);
+
   // Form state
   const [formName, setFormName] = useState('');
   const [formKeyword, setFormKeyword] = useState('');
@@ -73,6 +81,19 @@ function App() {
     const res = await fetch(`${API}/stats`);
     const data = await res.json();
     setStats(data);
+  }, []);
+
+  const fetchImportFiles = useCallback(async () => {
+    setImportLoading(true);
+    try {
+      const res = await fetch(`${API}/import/files`);
+      const data = await res.json();
+      setImportFiles(data.files || []);
+    } catch {
+      setImportFiles([]);
+    } finally {
+      setImportLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -164,6 +185,71 @@ function App() {
     msg = msg.replace(/\{kategori\}/gi, business.category || '');
     openWhatsApp(phone, msg);
     markAsSent(phone);
+  };
+
+  const startImport = async () => {
+    if (!importSelected || !importCampaignName.trim()) {
+      setImportStatus('error:Lutfen dosya ve kampanya adi secin');
+      return;
+    }
+    setImportUploading(true);
+    setImportStatus('loading');
+    try {
+      const res = await fetch(`${API}/import/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: importSelected, campaignName: importCampaignName.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setImportStatus('error:' + (data.error || 'Hata olustu'));
+      } else {
+        setImportStatus('success:' + data.totalBusinesses);
+        setImportCampaignName('');
+        setImportSelected('');
+        fetchCampaigns();
+        fetchStats();
+      }
+    } catch (err) {
+      setImportStatus('error:' + err.message);
+    } finally {
+      setImportUploading(false);
+    }
+  };
+
+  const handleJsonFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) {
+        alert('Gecersiz JSON: Bir dizi bekleniyor');
+        return;
+      }
+      const campName = importCampaignName.trim() || file.name.replace('.json', '');
+      setImportUploading(true);
+      setImportStatus('loading');
+      const res = await fetch(`${API}/import/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignName: campName, businesses: parsed })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setImportStatus('error:' + (data.error || 'Hata olustu'));
+      } else {
+        setImportStatus('success:' + data.totalBusinesses);
+        setImportCampaignName('');
+        fetchCampaigns();
+        fetchStats();
+      }
+    } catch (err) {
+      setImportStatus('error:' + err.message);
+    } finally {
+      setImportUploading(false);
+      e.target.value = '';
+    }
   };
 
   const addCampaign = async (e) => {
@@ -314,6 +400,10 @@ function App() {
         <div className={`sidebar-item ${page === 'data-hunt' ? 'active' : ''}`} onClick={() => setPage('data-hunt')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           Data Avı
+        </div>
+        <div className={`sidebar-item ${page === 'json-import' ? 'active' : ''}`} onClick={() => { setPage('json-import'); fetchImportFiles(); }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          JSON Ice Aktar
         </div>
         <div className={`sidebar-item ${page === 'raw-data' && websiteFilter === 'all' ? 'active' : ''}`} onClick={() => { setPage('raw-data'); setSelectedCampaignData(null); setWebsiteFilter('all'); }}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
@@ -568,6 +658,117 @@ function App() {
               </div>
             )}
           </>
+        )}
+
+        {page === 'json-import' && (
+          <div className="import-page">
+            <h2 style={{ marginBottom: 4 }}>JSON Ice Aktar</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 24 }}>
+              kolay-randevu-scrapper'dan alinan isletme listelerini Google'da arayip kaydedin.
+            </p>
+
+            <div className="import-section">
+              <h3>Hazir Dosyalardan Ice Aktar</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 16 }}>
+                /kolay-randevu-scrapper/results/ klasorunundeki JSON dosyalari:
+              </p>
+
+              {importLoading ? (
+                <div className="import-loading">Dosyalar yukleniyor...</div>
+              ) : importFiles.length === 0 ? (
+                <div className="import-empty">Dosya bulunamadi. Dizin kontrol edin.</div>
+              ) : (
+                <div className="import-file-grid">
+                  {importFiles.map(f => (
+                    <div
+                      key={f.filename}
+                      className={`import-file-card ${importSelected === f.filename ? 'selected' : ''}`}
+                      onClick={() => {
+                        setImportSelected(f.filename);
+                        if (!importCampaignName) {
+                          setImportCampaignName(f.filename.replace('.json', '') + ' - Google Tarama');
+                        }
+                      }}
+                    >
+                      <div className="import-file-name">{f.filename.replace('.json', '')}</div>
+                      <div className="import-file-count">{f.count} isletme</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="import-form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Kampanya Adi</label>
+                  <input
+                    placeholder="Ornek: Berberler - Google Tarama"
+                    value={importCampaignName}
+                    onChange={e => setImportCampaignName(e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>&nbsp;</label>
+                  <button
+                    className="btn btn-primary"
+                    onClick={startImport}
+                    disabled={importUploading || !importSelected || !importCampaignName.trim()}
+                  >
+                    {importUploading ? 'Baslatiliyor...' : 'Ice Aktar ve Tara'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="import-section" style={{ marginTop: 24 }}>
+              <h3>Ozel JSON Dosyasi Yukle</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 12 }}>
+                {"[{\"name\":\"...\",\"category\":\"...\"}] formatında JSON yukleyin"}
+              </p>
+              <div className="import-form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Kampanya Adi (opsiyonel)</label>
+                  <input
+                    placeholder="Bos birakilirsa dosya adi kullanilir"
+                    value={importCampaignName}
+                    onChange={e => setImportCampaignName(e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>&nbsp;</label>
+                  <label className="btn btn-secondary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    JSON Dosyasi Sec
+                    <input type="file" accept=".json" style={{ display: 'none' }} onChange={handleJsonFileUpload} />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {importStatus && (
+              <div className={`import-status-msg ${importStatus.startsWith('error') ? 'import-status-error' : importStatus === 'loading' ? 'import-status-loading' : 'import-status-success'}`}>
+                {importStatus === 'loading' && (
+                  <><span className="update-spinner"></span> Kampanya olusturuluyor ve tarama baslatiliyor...</>
+                )}
+                {importStatus.startsWith('success:') && (
+                  <>Basarili! {importStatus.split(':')[1]} isletme icin Google taramasi basladi. Kampanya listesinden takip edebilirsiniz.</>
+                )}
+                {importStatus.startsWith('error:') && (
+                  <>Hata: {importStatus.replace('error:', '')}</>
+                )}
+              </div>
+            )}
+
+            <div className="import-info-box" style={{ marginTop: 24 }}>
+              <h4>Nasil Calisir?</h4>
+              <ul>
+                <li>Her isletme icin Google'da arama yapilir</li>
+                <li>Bilgi panelinden telefon, web sitesi, adres ve Instagram cekilir</li>
+                <li>Veriler Ham Datalar sayfasinda gorunur, WhatsApp ile mesaj gonderebilirsiniz</li>
+                <li>Arama arasi 3-7 saniye beklenir (insan benzeri davranis)</li>
+                <li>Kampanyayi Data Avi sayfasindan duraklat/iptal edebilirsiniz</li>
+              </ul>
+            </div>
+          </div>
         )}
 
         {page === 'raw-data' && (

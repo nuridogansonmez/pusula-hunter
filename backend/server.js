@@ -5,11 +5,14 @@ import { createServer } from 'http';
 import { v4 as uuidv4 } from 'uuid';
 import db from './database.js';
 import { GoogleMapsScraper } from './scraper.js';
+import { GoogleSearchScraper } from './google-scraper.js';
 import * as XLSX from 'xlsx';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { exec } from 'child_process';
+
+const KOLAY_RESULTS_DIR = '/Users/nds/Desktop/kolay-randevu-scrapper/results';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -215,6 +218,136 @@ app.get('/api/campaigns/:id/export', (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
   res.send(buffer);
+});
+
+// === JSON IMPORT ===
+
+app.get('/api/import/files', (req, res) => {
+  try {
+    if (!fs.existsSync(KOLAY_RESULTS_DIR)) {
+      return res.json({ files: [], error: 'Klasor bulunamadi: ' + KOLAY_RESULTS_DIR });
+    }
+    const files = fs.readdirSync(KOLAY_RESULTS_DIR)
+      .filter(f => f.endsWith('.json') && !f.startsWith('discovered_') && !f.startsWith('all_businesses'))
+      .map(filename => {
+        try {
+          const filePath = path.join(KOLAY_RESULTS_DIR, filename);
+          const raw = fs.readFileSync(filePath, 'utf8');
+          const data = JSON.parse(raw);
+          const count = Array.isArray(data) ? data.length : 0;
+          return { filename, count };
+        } catch {
+          return { filename, count: 0 };
+        }
+      })
+      .sort((a, b) => b.count - a.count);
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/import/start', async (req, res) => {
+  const { filename, campaignName } = req.body;
+  if (!filename || !campaignName) {
+    return res.status(400).json({ error: 'Dosya adi ve kampanya adi gerekli' });
+  }
+
+  const filePath = path.join(KOLAY_RESULTS_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Dosya bulunamadi: ' + filename });
+  }
+
+  let rawData;
+  try {
+    rawData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    return res.status(400).json({ error: 'JSON parse hatasi: ' + err.message });
+  }
+
+  if (!Array.isArray(rawData)) {
+    return res.status(400).json({ error: 'Dosya gecerli bir dizi icermiyor' });
+  }
+
+  // Deduplicate by name
+  const seen = new Set();
+  const businesses = rawData
+    .filter(item => item && item.name)
+    .filter(item => {
+      const key = item.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  if (businesses.length === 0) {
+    return res.status(400).json({ error: 'Dosyada gecerli isletme bulunamadi' });
+  }
+
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO campaigns (id, name, keyword, country, city, districts)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, campaignName, filename, 'Türkiye', '', '[]');
+
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
+  broadcast('campaign_created', campaign);
+
+  const scraper = new GoogleSearchScraper(
+    id,
+    businesses,
+    (log) => broadcast('log', { campaignId: id, ...log }),
+    (data) => broadcast('business_found', { campaignId: id, ...data }),
+    (status) => broadcast('campaign_status', { campaignId: id, status })
+  );
+
+  activeCampaigns.set(id, scraper);
+  scraper.start().finally(() => activeCampaigns.delete(id));
+
+  res.json({ success: true, campaign, totalBusinesses: businesses.length });
+});
+
+app.post('/api/import/upload', express.json({ limit: '50mb' }), (req, res) => {
+  const { campaignName, businesses: rawBusinesses } = req.body;
+  if (!campaignName || !Array.isArray(rawBusinesses) || rawBusinesses.length === 0) {
+    return res.status(400).json({ error: 'Kampanya adi ve isletme listesi gerekli' });
+  }
+
+  const seen = new Set();
+  const businesses = rawBusinesses
+    .filter(item => item && item.name)
+    .filter(item => {
+      const key = item.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  if (businesses.length === 0) {
+    return res.status(400).json({ error: 'Gecerli isletme bulunamadi' });
+  }
+
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO campaigns (id, name, keyword, country, city, districts)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, campaignName, 'yuklenen-dosya', 'Türkiye', '', '[]');
+
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
+  broadcast('campaign_created', campaign);
+
+  const scraper = new GoogleSearchScraper(
+    id,
+    businesses,
+    (log) => broadcast('log', { campaignId: id, ...log }),
+    (data) => broadcast('business_found', { campaignId: id, ...data }),
+    (status) => broadcast('campaign_status', { campaignId: id, status })
+  );
+
+  activeCampaigns.set(id, scraper);
+  scraper.start().finally(() => activeCampaigns.delete(id));
+
+  res.json({ success: true, campaign, totalBusinesses: businesses.length });
 });
 
 // === UPDATE ===
