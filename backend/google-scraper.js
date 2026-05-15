@@ -51,15 +51,15 @@ export class GoogleSearchScraper {
 
       const page = await context.newPage();
 
-      // Accept Google cookies on first visit
-      await page.goto('https://www.google.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(randomDelay(1500, 3000));
+      // Accept Google cookies on first visit via Maps
+      await page.goto('https://www.google.com/maps', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(randomDelay(3000, 5000));
 
       try {
         const acceptBtn = page.locator('button:has-text("Tümünü kabul et"), button:has-text("Accept all"), button:has-text("Kabul")');
         if (await acceptBtn.first().isVisible({ timeout: 4000 })) {
           await acceptBtn.first().click();
-          await page.waitForTimeout(randomDelay(1000, 2000));
+          await page.waitForTimeout(randomDelay(1500, 3000));
           this.log('info', 'Google cerezleri kabul edildi');
         }
       } catch {}
@@ -135,134 +135,62 @@ export class GoogleSearchScraper {
 
     this.log('inspect', `Araniyor: ${name}`);
 
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(name)}&hl=tr&gl=tr`;
+    // Use Google Maps search instead of Google Search (avoids CAPTCHA)
+    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(name)}`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(randomDelay(2000, 3500));
+    await page.waitForTimeout(randomDelay(4000, 6000));
+
+    // Check if we landed on a direct business page (single result) or a list
+    const hasDirectResult = await page.locator('h1').first().isVisible({ timeout: 3000 }).catch(() => false);
+
+    if (!hasDirectResult) {
+      // If it's a results list, try clicking the first result
+      try {
+        const firstResult = page.locator('div[role="feed"] > div > div > a').first();
+        if (await firstResult.isVisible({ timeout: 5000 })) {
+          await firstResult.click();
+          await page.waitForTimeout(randomDelay(3000, 5000));
+        }
+      } catch {}
+    }
 
     const result = await page.evaluate(() => {
-      const data = {
-        phone: '',
-        website: '',
-        address: '',
-        instagram: ''
-      };
+      const data = { phone: '', website: '', address: '', instagram: '' };
 
-      // --- Phone extraction ---
-      // Try tel: links first (most reliable)
-      const telLink = document.querySelector('a[href^="tel:"]');
-      if (telLink) {
-        data.phone = telLink.getAttribute('href').replace('tel:', '').trim();
-      }
+      // === Google Maps detail page extraction ===
+      const buttons = document.querySelectorAll('button[data-item-id]');
+      buttons.forEach(btn => {
+        const itemId = btn.getAttribute('data-item-id') || '';
+        const ariaLabel = btn.getAttribute('aria-label') || '';
+        const text = btn.textContent || '';
 
-      if (!data.phone) {
-        // Look for phone near "Telefon" text in knowledge panel
-        const allText = document.querySelectorAll('span, div');
-        for (const el of allText) {
-          const text = el.textContent || '';
-          const parentText = el.parentElement?.textContent || '';
-          // Turkish phone pattern: starts with 0 or +90, 10-11 digits
-          const phoneMatch = text.match(/^(\+90|0)\s?(\d{3})\s?(\d{3})\s?(\d{2})\s?(\d{2})$/);
-          if (phoneMatch && text.length < 20) {
-            data.phone = text.trim();
-            break;
-          }
-          // Look for "Telefon" label with nearby phone
-          if ((parentText.includes('Telefon') || parentText.includes('telefon')) && text.length < 20) {
-            const phoneMatch2 = text.match(/[\d\s\+\-\(\)]{7,}/);
-            if (phoneMatch2 && phoneMatch2[0].replace(/\D/g, '').length >= 7) {
-              data.phone = phoneMatch2[0].trim();
-              break;
+        // Phone
+        if (itemId.startsWith('phone:') || ariaLabel.includes('telefon') || ariaLabel.includes('phone')) {
+          const phoneMatch = text.match(/[\d\s\+\-\(\)]{7,}/);
+          if (phoneMatch) {
+            const digits = phoneMatch[0].replace(/\D/g, '');
+            if (digits.length >= 7 && !/^850|^900/.test(digits)) {
+              data.phone = phoneMatch[0].trim();
             }
           }
         }
-      }
 
-      if (!data.phone) {
-        // Broader phone pattern search in knowledge panel area
-        const kpPanel = document.querySelector('[data-attrid*="phone"], [data-ved][class*="knowledge"]') ||
-                        document.querySelector('.kp-header') ||
-                        document.querySelector('[class*="kp-"]');
-        if (kpPanel) {
-          const kpText = kpPanel.textContent || '';
-          const phoneMatch = kpText.match(/(\+?90\s?)?0?\s?\d{3}\s?\d{3}\s?\d{2}\s?\d{2}/);
-          if (phoneMatch) data.phone = phoneMatch[0].trim();
+        // Address
+        if (itemId === 'address' || ariaLabel.includes('adres') || ariaLabel.includes('address')) {
+          data.address = ariaLabel.replace(/^Adres[:：]?\s*/i, '') || text.trim();
         }
-      }
+      });
 
-      // --- Website extraction ---
-      // Knowledge panel website link
-      const websiteSelectors = [
-        'a[data-attrid*="website"]',
-        'a[href*="//"][data-ved][jsname]',
-        '.ab_button[href*="http"]',
-      ];
-      for (const sel of websiteSelectors) {
-        const el = document.querySelector(sel);
-        if (el && el.href && !el.href.includes('google.com') && !el.href.includes('facebook.com') && !el.href.includes('instagram.com')) {
-          data.website = el.href;
-          break;
-        }
-      }
-
+      // Website — only from Maps authority link (not organic results)
       if (!data.website) {
-        // Look for website in knowledge panel by text
-        const allAnchors = document.querySelectorAll('a[href^="http"]');
-        for (const a of allAnchors) {
-          const href = a.href || '';
-          if (href.includes('google.com') || href.includes('facebook.com') ||
-              href.includes('instagram.com') || href.includes('twitter.com') ||
-              href.includes('youtube.com') || href.includes('maps.google') ||
-              href.includes('kolayrandevu.com') || href.includes('maps.app')) {
-            continue;
-          }
-          // Only pick up links that look like business websites (not ads)
-          const parentText = a.closest('[data-attrid]')?.getAttribute('data-attrid') || '';
-          if (parentText.includes('website') || parentText.includes('url')) {
-            data.website = href;
-            break;
-          }
-        }
+        const webLink = document.querySelector('a[data-item-id="authority"]');
+        if (webLink) data.website = webLink.href;
       }
 
-      // --- Address extraction ---
-      // Look for "Adres:" label
-      const addrSelectors = [
-        '[data-attrid*="address"]',
-        '[data-attrid="kc:/location/location:address"]',
-      ];
-      for (const sel of addrSelectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-          data.address = el.textContent?.replace(/^Adres[:：]?\s*/i, '').trim() || '';
-          break;
-        }
-      }
-
+      // Fallback address
       if (!data.address) {
-        // Text-based: find element near "Adres" keyword
-        const allSpans = document.querySelectorAll('span');
-        for (let i = 0; i < allSpans.length; i++) {
-          const span = allSpans[i];
-          if (span.textContent?.trim() === 'Adres' || span.textContent?.trim() === 'Address') {
-            // Next sibling or parent's next element likely has the address
-            const next = span.nextElementSibling || span.parentElement?.nextElementSibling;
-            if (next && next.textContent.length > 5) {
-              data.address = next.textContent.trim();
-              break;
-            }
-          }
-        }
-      }
-
-      // --- Instagram extraction ---
-      const igLinks = document.querySelectorAll('a[href*="instagram.com"]');
-      for (const a of igLinks) {
-        const href = a.href || '';
-        // Skip generic instagram.com links, pick profile links
-        if (href.match(/instagram\.com\/[a-zA-Z0-9_.]+\/?($|\?)/)) {
-          data.instagram = href.split('?')[0];
-          break;
-        }
+        const addrBtn = document.querySelector('button[data-item-id="address"]');
+        if (addrBtn) data.address = addrBtn.getAttribute('aria-label')?.replace(/^Adres[:：]?\s*/i, '') || '';
       }
 
       return data;
