@@ -1042,3 +1042,134 @@
   font-size: 13px;
   line-height: 1.7;
 }
+
+/* JSON button in campaign card */
+.btn-icon-json {
+  font-size: 10px;
+  font-weight: 700;
+  color: #6366f1;
+  letter-spacing: 0.3px;
+}
+
+.btn-icon-json:hover {
+  background: #eef2ff;
+  color: #4338ca;
+}
+
+/* Campaign filter select */
+.campaign-filter-select {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  background: white;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.2s;
+  max-width: 200px;
+}
+
+.campaign-filter-select:focus {
+  border-color: var(--primary);
+}
+
+/* Notes cell */
+.note-cell {
+  position: relative;
+  white-space: normal !important;
+}
+
+.note-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 3px 6px;
+  transition: background 0.15s;
+  min-height: 26px;
+}
+
+.note-display:hover {
+  background: #f1f5f9;
+}
+
+.note-text {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+  display: inline-block;
+}
+
+.note-empty {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.note-edit-icon {
+  opacity: 0;
+  flex-shrink: 0;
+  color: #94a3b8;
+  transition: opacity 0.15s;
+}
+
+.note-display:hover .note-edit-icon {
+  opacity: 1;
+}
+
+.note-edit-popup {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+  z-index: 10;
+  min-width: 200px;
+}
+
+.note-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.note-preset-chip {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 11px;
+  background: #f8fafc;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.note-preset-chip:hover {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+
+.note-textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  line-height: 1.4;
+  box-sizing: border-box;
+}
+
+.note-textarea:focus {
+  border-color: var(--primary);
+}

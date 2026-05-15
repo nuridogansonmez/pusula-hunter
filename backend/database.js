@@ -49,4 +49,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_businesses_name ON businesses(name);
 `);
 
+// Safe migration: add notes column if not exists
+try {
+  const cols = db.prepare("PRAGMA table_info(businesses)").all();
+  const hasNotes = cols.some(c => c.name === 'notes');
+  if (!hasNotes) {
+    db.exec("ALTER TABLE businesses ADD COLUMN notes TEXT DEFAULT ''");
+  }
+} catch (e) {
+  // column may already exist
+}
+
 export default db;

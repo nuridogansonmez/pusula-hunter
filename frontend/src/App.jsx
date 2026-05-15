@@ -48,6 +48,16 @@ function App() {
   const [dataSearch, setDataSearch] = useState('');
   const [selectedCampaignData, setSelectedCampaignData] = useState(null);
   const [websiteFilter, setWebsiteFilter] = useState('all');
+  const [campaignFilter, setCampaignFilter] = useState('all');
+
+  // Notes state
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editingNoteText, setEditingNoteText] = useState('');
+
+  // Partner data import state
+  const [partnerImportName, setPartnerImportName] = useState('');
+  const [partnerImportStatus, setPartnerImportStatus] = useState('');
+  const [partnerImportUploading, setPartnerImportUploading] = useState(false);
 
   // WhatsApp state
   const [wpMessage, setWpMessage] = useState('');
@@ -162,6 +172,17 @@ function App() {
 
     return () => ws.close();
   }, [fetchCampaigns, fetchStats]);
+
+  // Load all businesses when navigating to raw-data without a selected campaign
+  useEffect(() => {
+    if (page === 'raw-data' && !selectedCampaignData) {
+      campaigns.forEach(c => {
+        if (!businesses[c.id]) {
+          loadBusinesses(c.id);
+        }
+      });
+    }
+  }, [page, selectedCampaignData, campaigns]);
 
   const saveWpMessage = (msg) => {
     setWpMessage(msg);
@@ -336,6 +357,62 @@ function App() {
     window.open(`${API}/campaigns/${id}/export${filterParam}`, '_blank');
   };
 
+  const exportCampaignJson = (id) => {
+    window.open(`${API}/campaigns/${id}/export-json`, '_blank');
+  };
+
+  const saveNote = async (businessId, notes) => {
+    await fetch(`${API}/businesses/${businessId}/notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes })
+    });
+    // Update locally
+    setBusinesses(prev => {
+      const updated = {};
+      for (const [cid, list] of Object.entries(prev)) {
+        updated[cid] = list.map(b => b.id === businessId ? { ...b, notes } : b);
+      }
+      return updated;
+    });
+    setEditingNoteId(null);
+  };
+
+  const handlePartnerJsonUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) {
+        alert('Geçersiz JSON: Bir dizi bekleniyor');
+        return;
+      }
+      const campName = partnerImportName.trim() || file.name.replace('.json', '');
+      setPartnerImportUploading(true);
+      setPartnerImportStatus('loading');
+      const res = await fetch(`${API}/campaigns/import-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignName: campName, businesses: parsed })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPartnerImportStatus('error:' + (data.error || 'Hata oluştu'));
+      } else {
+        setPartnerImportStatus('success:' + data.totalBusinesses);
+        setPartnerImportName('');
+        fetchCampaigns();
+        fetchStats();
+      }
+    } catch (err) {
+      setPartnerImportStatus('error:' + err.message);
+    } finally {
+      setPartnerImportUploading(false);
+      e.target.value = '';
+    }
+  };
+
   const loadBusinesses = async (campaignId) => {
     const res = await fetch(`${API}/campaigns/${campaignId}/businesses`);
     const data = await res.json();
@@ -344,8 +421,17 @@ function App() {
 
   const viewCampaignData = async (campaign) => {
     setSelectedCampaignData(campaign);
+    setCampaignFilter('all');
     setPage('raw-data');
     await loadBusinesses(campaign.id);
+  };
+
+  // Load businesses when campaign filter changes
+  const handleCampaignFilterChange = async (cid) => {
+    setCampaignFilter(cid);
+    if (cid !== 'all' && !businesses[cid]) {
+      await loadBusinesses(cid);
+    }
   };
 
   const toggleCampaign = (id) => {
@@ -364,7 +450,9 @@ function App() {
 
   const currentBusinesses = selectedCampaignData
     ? (businesses[selectedCampaignData.id] || [])
-    : Object.values(businesses).flat();
+    : campaignFilter !== 'all'
+      ? (businesses[campaignFilter] || [])
+      : Object.values(businesses).flat();
 
   const filteredBusinesses = currentBusinesses.filter(b => {
     if (dataSearch && !(
@@ -578,6 +666,7 @@ function App() {
                       <>
                         <button className="btn-icon" onClick={() => viewCampaignData(campaign)} title="Verileri Gor">&#128202;</button>
                         <button className="btn-icon" onClick={() => exportCampaign(campaign.id)} title="Excel Indir">&#128229;</button>
+                        <button className="btn-icon btn-icon-json" onClick={() => exportCampaignJson(campaign.id)} title="JSON Indir">JSON</button>
                       </>
                     )}
                     <button className="btn-icon" onClick={() => deleteCampaign(campaign.id)} title="Sil">&#128465;</button>
@@ -758,6 +847,45 @@ function App() {
               </div>
             )}
 
+            {/* Partner data direct import */}
+            <div className="import-section" style={{ marginTop: 24 }}>
+              <h3>Hazir Veri Yukle</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginBottom: 12 }}>
+                Ortaginizin disa aktardigi JSON dosyasini buraya yukleyin. Tarama yapilmaz, veriler dogrudan veritabanina kaydedilir.
+              </p>
+              <div className="import-form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>Kampanya Adi (opsiyonel)</label>
+                  <input
+                    placeholder="Bos birakilirsa dosya adi kullanilir"
+                    value={partnerImportName}
+                    onChange={e => setPartnerImportName(e.target.value)}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 'none' }}>
+                  <label>&nbsp;</label>
+                  <label className="btn btn-primary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    {partnerImportUploading ? 'Yukleniyor...' : 'Yukle'}
+                    <input type="file" accept=".json" style={{ display: 'none' }} onChange={handlePartnerJsonUpload} disabled={partnerImportUploading} />
+                  </label>
+                </div>
+              </div>
+              {partnerImportStatus && (
+                <div className={`import-status-msg ${partnerImportStatus.startsWith('error') ? 'import-status-error' : partnerImportStatus === 'loading' ? 'import-status-loading' : 'import-status-success'}`} style={{ marginTop: 12 }}>
+                  {partnerImportStatus === 'loading' && (
+                    <><span className="update-spinner"></span> Veriler kaydediliyor...</>
+                  )}
+                  {partnerImportStatus.startsWith('success:') && (
+                    <>Basarili! {partnerImportStatus.split(':')[1]} isletme veritabanina eklendi.</>
+                  )}
+                  {partnerImportStatus.startsWith('error:') && (
+                    <>Hata: {partnerImportStatus.replace('error:', '')}</>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="import-info-box" style={{ marginTop: 24 }}>
               <h4>Nasil Calisir?</h4>
               <ul>
@@ -786,7 +914,19 @@ function App() {
                   <>Tum Veriler <span className="record-count">{filteredBusinesses.length} kayit</span></>
                 )}
               </h2>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {!selectedCampaignData && (
+                  <select
+                    className="campaign-filter-select"
+                    value={campaignFilter}
+                    onChange={e => handleCampaignFilterChange(e.target.value)}
+                  >
+                    <option value="all">Tum Kampanyalar</option>
+                    {campaigns.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                )}
                 <div className="filter-tabs">
                   <button className={`filter-tab ${websiteFilter === 'all' ? 'active' : ''}`} onClick={() => setWebsiteFilter('all')}>
                     Tumu ({currentBusinesses.length})
@@ -858,12 +998,14 @@ function App() {
                     <th>Yorum</th>
                     <th>Kategori</th>
                     <th>WP</th>
+                    <th>Not</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredBusinesses.map((b, i) => {
                     const phone = b.phone || b.mobile;
                     const isSent = phone && wpSentList.has(formatPhone(phone));
+                    const isEditingNote = editingNoteId === b.id;
                     return (
                       <tr key={b.id || i} className={!b.website ? 'row-no-website' : ''}>
                         <td>{i + 1}</td>
@@ -890,6 +1032,43 @@ function App() {
                             </button>
                           ) : (
                             <span style={{ color: '#94a3b8', fontSize: 12 }}>Tel yok</span>
+                          )}
+                        </td>
+                        <td className="note-cell" style={{ minWidth: 140, maxWidth: 200 }}>
+                          {isEditingNote ? (
+                            <div className="note-edit-popup">
+                              <div className="note-presets">
+                                {['Arandi', 'Ilgileniyor', 'Teklif Gonderildi', 'Reddetti', 'Ulasilamadi'].map(preset => (
+                                  <button key={preset} className="note-preset-chip" onClick={() => setEditingNoteText(preset)}>{preset}</button>
+                                ))}
+                              </div>
+                              <textarea
+                                className="note-textarea"
+                                value={editingNoteText}
+                                onChange={e => setEditingNoteText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveNote(b.id, editingNoteText); } if (e.key === 'Escape') setEditingNoteId(null); }}
+                                autoFocus
+                                rows={2}
+                                placeholder="Not ekle..."
+                              />
+                              <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                                <button className="btn btn-sm btn-primary" style={{ flex: 1, fontSize: 11, padding: '4px 8px' }} onClick={() => saveNote(b.id, editingNoteText)}>Kaydet</button>
+                                <button className="btn btn-sm btn-secondary" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => setEditingNoteId(null)}>Iptal</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div
+                              className="note-display"
+                              onClick={() => { setEditingNoteId(b.id); setEditingNoteText(b.notes || ''); }}
+                              title={b.notes || 'Not eklemek icin tiklayin'}
+                            >
+                              {b.notes ? (
+                                <span className="note-text">{b.notes}</span>
+                              ) : (
+                                <span className="note-empty">+ Not</span>
+                              )}
+                              <svg className="note-edit-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </div>
                           )}
                         </td>
                       </tr>

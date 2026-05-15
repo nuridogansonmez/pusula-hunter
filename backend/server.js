@@ -220,6 +220,92 @@ app.get('/api/campaigns/:id/export', (req, res) => {
   res.send(buffer);
 });
 
+// === JSON EXPORT ===
+
+app.get('/api/campaigns/:id/export-json', (req, res) => {
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Kampanya bulunamadı' });
+
+  const businesses = db.prepare('SELECT * FROM businesses WHERE campaign_id = ? ORDER BY id').all(req.params.id);
+
+  const filename = `${campaign.name.replace(/[^a-zA-Z0-9ğüşöçıİĞÜŞÖÇ\s]/g, '')}_${new Date().toISOString().slice(0, 10)}.json`;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+  res.json(businesses);
+});
+
+// === IMPORT PARTNER DATA (no scraping, direct DB insert) ===
+
+app.post('/api/campaigns/import-data', express.json({ limit: '50mb' }), (req, res) => {
+  const { campaignName, businesses: rawBusinesses } = req.body;
+  if (!campaignName || !Array.isArray(rawBusinesses) || rawBusinesses.length === 0) {
+    return res.status(400).json({ error: 'Kampanya adı ve işletme listesi gerekli' });
+  }
+
+  const seen = new Set();
+  const businesses = rawBusinesses
+    .filter(item => item && item.name)
+    .filter(item => {
+      const key = item.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  if (businesses.length === 0) {
+    return res.status(400).json({ error: 'Geçerli işletme bulunamadı' });
+  }
+
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO campaigns (id, name, keyword, country, city, districts, status, total_found)
+    VALUES (?, ?, ?, ?, ?, ?, 'completed', ?)
+  `).run(id, campaignName, 'ortak-verisi', 'Türkiye', '', '[]', businesses.length);
+
+  const insertBusiness = db.prepare(`
+    INSERT INTO businesses (campaign_id, name, phone, mobile, website, email, address, city, district, rating, review_count, category, google_maps_url, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertMany = db.transaction((list) => {
+    for (const b of list) {
+      insertBusiness.run(
+        id,
+        b.name || '',
+        b.phone || '',
+        b.mobile || '',
+        b.website || '',
+        b.email || '',
+        b.address || '',
+        b.city || '',
+        b.district || '',
+        b.rating || 0,
+        b.review_count || 0,
+        b.category || '',
+        b.google_maps_url || '',
+        b.notes || ''
+      );
+    }
+  });
+
+  insertMany(businesses);
+
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
+  broadcast('campaign_created', campaign);
+
+  res.json({ success: true, campaign, totalBusinesses: businesses.length });
+});
+
+// === BUSINESS NOTES ===
+
+app.patch('/api/businesses/:id/notes', (req, res) => {
+  const { notes } = req.body;
+  if (typeof notes !== 'string') return res.status(400).json({ error: 'notes alanı gerekli' });
+  const result = db.prepare('UPDATE businesses SET notes = ? WHERE id = ?').run(notes, req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: 'İşletme bulunamadı' });
+  res.json({ success: true });
+});
+
 // === JSON IMPORT ===
 
 app.get('/api/import/files', (req, res) => {
