@@ -136,7 +136,9 @@ export class GoogleSearchScraper {
     this.log('inspect', `Araniyor: ${name}`);
 
     // Use Google Maps search instead of Google Search (avoids CAPTCHA)
-    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(name)}`;
+    // Add "İstanbul" to help Maps find the right location
+    const searchQuery = name.includes('stanbul') ? name : `${name} İstanbul`;
+    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(randomDelay(4000, 6000));
 
@@ -193,26 +195,126 @@ export class GoogleSearchScraper {
         if (addrBtn) data.address = addrBtn.getAttribute('aria-label')?.replace(/^Adres[:：]?\s*/i, '') || '';
       }
 
+      // Also grab Maps URL and rating while we're here
+      const ratingEl = document.querySelector('div.F7nice span[aria-hidden="true"]');
+      if (ratingEl) data.rating = ratingEl.textContent?.replace(',', '.') || '0';
+
+      const reviewEl = document.querySelector('div.F7nice span[aria-label]');
+      if (reviewEl) {
+        const match = (reviewEl.getAttribute('aria-label') || '').match(/\d+/);
+        if (match) data.reviewCount = match[0];
+      }
+
+      // Check if we actually found a Maps result
+      const h1 = document.querySelector('h1');
+      data.mapsFound = !!h1 && h1.textContent.trim().length > 0;
+
       return data;
     });
+
+    // Get Maps URL if on a business page
+    const mapsUrl = result.mapsFound ? page.url() : '';
+    const coords = mapsUrl.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+
+    // === GOOGLE SEARCH FALLBACK for Instagram + missing phone ===
+    // Only if Maps didn't find phone OR we want Instagram data
+    let googleResult = { instagram: '', phone: '' };
+
+    if (!this.cancelled) {
+      const needsGoogle = !result.phone || !result.mapsFound;
+      // Always try Google for Instagram (Maps doesn't have it)
+      this.log('info', `Google'da Instagram araniyor: ${name}`);
+      await page.waitForTimeout(randomDelay(2000, 4000));
+
+      try {
+        const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(name + ' İstanbul instagram')}&hl=tr&gl=tr`;
+        await page.goto(googleUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(randomDelay(3000, 5000));
+
+        googleResult = await page.evaluate(() => {
+          const gData = { instagram: '', phone: '' };
+
+          // Extract Instagram profile URL
+          const igLinks = document.querySelectorAll('a[href*="instagram.com"]');
+          for (const a of igLinks) {
+            const href = a.href || '';
+            if (href.match(/instagram\.com\/[a-zA-Z0-9_.]+\/?($|\?)/) && !href.includes('/p/') && !href.includes('/reel/')) {
+              gData.instagram = href.split('?')[0];
+              break;
+            }
+          }
+
+          // Extract phone from Instagram snippet bio text
+          if (gData.instagram) {
+            const igLinks = document.querySelectorAll('a[href*="instagram.com"]');
+            for (const a of igLinks) {
+              // Walk up to find the result container
+              let container = a.parentElement;
+              for (let i = 0; i < 8 && container; i++) {
+                container = container.parentElement;
+              }
+              if (container) {
+                const text = container.textContent || '';
+                // Turkish phone patterns
+                const patterns = [
+                  /(\+90|0)\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}/,
+                  /0\s?\d{3}\s?\d{3}\s?\d{2}\s?\d{2}/,
+                ];
+                for (const p of patterns) {
+                  const match = text.match(p);
+                  if (match) {
+                    const digits = match[0].replace(/\D/g, '');
+                    if (digits.length >= 10 && !/^850|^900/.test(digits)) {
+                      gData.phone = match[0].trim();
+                      break;
+                    }
+                  }
+                }
+                if (gData.phone) break;
+              }
+            }
+          }
+
+          // Also try general page scan for phone if still empty
+          if (!gData.phone) {
+            const bodyText = document.body.innerText || '';
+            const match = bodyText.match(/(\+90|0)\s?\(?\d{3}\)?\s?\d{3}\s?\d{2}\s?\d{2}/);
+            if (match) {
+              const digits = match[0].replace(/\D/g, '');
+              if (digits.length >= 10 && !/^850|^900/.test(digits)) {
+                gData.phone = match[0].trim();
+              }
+            }
+          }
+
+          return gData;
+        });
+      } catch (err) {
+        this.log('warning', `Google arama atlandi: ${err.message}`);
+      }
+    }
+
+    // Merge results: Maps data + Google fallback
+    const finalPhone = result.phone || googleResult.phone || '';
+    const finalInstagram = googleResult.instagram || '';
 
     const business = {
       campaign_id: this.campaignId,
       name: name.trim(),
-      phone: result.phone || '',
+      phone: finalPhone,
       mobile: '',
       website: result.website || '',
       email: '',
       address: result.address || '',
       city: '',
       district: '',
-      rating: 0,
-      review_count: 0,
+      rating: parseFloat(result.rating || '0') || 0,
+      review_count: parseInt(result.reviewCount || '0') || 0,
       category: category || '',
-      google_maps_url: '',
-      latitude: 0,
-      longitude: 0,
-      social_media: result.instagram ? JSON.stringify({ instagram: result.instagram }) : '{}'
+      google_maps_url: mapsUrl,
+      latitude: coords ? parseFloat(coords[1]) : 0,
+      longitude: coords ? parseFloat(coords[2]) : 0,
+      social_media: finalInstagram ? JSON.stringify({ instagram: finalInstagram }) : '{}'
     };
 
     db.prepare(`
@@ -228,8 +330,9 @@ export class GoogleSearchScraper {
     this.log('data', `Kaydedildi: ${business.name}`);
     if (business.phone) this.log('phone', `Telefon: ${business.phone}`);
     if (business.website) this.log('website', `Web: ${business.website}`);
+    else this.log('info', `Sitesi yok — hedef musteri!`);
     if (business.address) this.log('address', `Adres bulundu`);
-    if (result.instagram) this.log('info', `Instagram: ${result.instagram}`);
+    if (finalInstagram) this.log('info', `Instagram: ${finalInstagram}`);
 
     this.onData(business);
   }
