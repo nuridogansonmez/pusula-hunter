@@ -31,6 +31,40 @@ if (fs.existsSync(frontendDist)) {
 // Active scrapers
 const activeCampaigns = new Map();
 
+// Import queue system — runs one at a time
+const importQueue = [];
+let importQueueRunning = false;
+
+async function processImportQueue() {
+  if (importQueueRunning || importQueue.length === 0) return;
+  importQueueRunning = true;
+
+  while (importQueue.length > 0) {
+    const job = importQueue[0];
+    broadcast('queue_status', { queue: importQueue.map(j => ({ id: j.id, name: j.name })), currentId: job.id });
+
+    try {
+      const scraper = new GoogleSearchScraper(
+        job.id,
+        job.businesses,
+        (log) => broadcast('log', { campaignId: job.id, ...log }),
+        (data) => broadcast('business_found', { campaignId: job.id, ...data }),
+        (status) => broadcast('campaign_status', { campaignId: job.id, status })
+      );
+      activeCampaigns.set(job.id, scraper);
+      await scraper.start();
+    } catch (err) {
+      console.error(`Queue job failed: ${job.name}`, err.message);
+    } finally {
+      activeCampaigns.delete(job.id);
+      importQueue.shift();
+      broadcast('queue_status', { queue: importQueue.map(j => ({ id: j.id, name: j.name })), currentId: null });
+    }
+  }
+
+  importQueueRunning = false;
+}
+
 // WebSocket connections
 const wsClients = new Set();
 wss.on('connection', (ws) => {
@@ -379,18 +413,60 @@ app.post('/api/import/start', async (req, res) => {
   const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
   broadcast('campaign_created', campaign);
 
-  const scraper = new GoogleSearchScraper(
-    id,
-    businesses,
-    (log) => broadcast('log', { campaignId: id, ...log }),
-    (data) => broadcast('business_found', { campaignId: id, ...data }),
-    (status) => broadcast('campaign_status', { campaignId: id, status })
-  );
+  // Add to queue instead of starting immediately
+  importQueue.push({ id, name: campaignName, businesses });
+  processImportQueue();
 
-  activeCampaigns.set(id, scraper);
-  scraper.start().finally(() => activeCampaigns.delete(id));
+  res.json({ success: true, campaign, totalBusinesses: businesses.length, queuePosition: importQueue.length });
+});
 
-  res.json({ success: true, campaign, totalBusinesses: businesses.length });
+// Batch queue: add multiple JSON files at once
+app.post('/api/import/batch', (req, res) => {
+  const { filenames } = req.body;
+  if (!Array.isArray(filenames) || filenames.length === 0) {
+    return res.status(400).json({ error: 'Dosya listesi gerekli' });
+  }
+
+  const added = [];
+  for (const filename of filenames) {
+    const filePath = path.join(KOLAY_RESULTS_DIR, filename);
+    if (!fs.existsSync(filePath)) continue;
+
+    let rawData;
+    try { rawData = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { continue; }
+    if (!Array.isArray(rawData)) continue;
+
+    const seen = new Set();
+    const businesses = rawData.filter(item => item && item.name).filter(item => {
+      const key = item.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (businesses.length === 0) continue;
+
+    const id = uuidv4();
+    const campaignName = filename.replace('.json', '') + ' - Google Tarama';
+    db.prepare(`INSERT INTO campaigns (id, name, keyword, country, city, districts) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, campaignName, filename, 'Türkiye', '', '[]');
+
+    const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
+    broadcast('campaign_created', campaign);
+
+    importQueue.push({ id, name: campaignName, businesses });
+    added.push({ id, name: campaignName, count: businesses.length });
+  }
+
+  processImportQueue();
+  res.json({ success: true, added, queueLength: importQueue.length });
+});
+
+// Queue status
+app.get('/api/import/queue', (req, res) => {
+  res.json({
+    running: importQueueRunning,
+    queue: importQueue.map(j => ({ id: j.id, name: j.name, count: j.businesses.length }))
+  });
 });
 
 app.post('/api/import/upload', express.json({ limit: '50mb' }), (req, res) => {
@@ -422,18 +498,10 @@ app.post('/api/import/upload', express.json({ limit: '50mb' }), (req, res) => {
   const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(id);
   broadcast('campaign_created', campaign);
 
-  const scraper = new GoogleSearchScraper(
-    id,
-    businesses,
-    (log) => broadcast('log', { campaignId: id, ...log }),
-    (data) => broadcast('business_found', { campaignId: id, ...data }),
-    (status) => broadcast('campaign_status', { campaignId: id, status })
-  );
+  importQueue.push({ id, name: campaignName, businesses });
+  processImportQueue();
 
-  activeCampaigns.set(id, scraper);
-  scraper.start().finally(() => activeCampaigns.delete(id));
-
-  res.json({ success: true, campaign, totalBusinesses: businesses.length });
+  res.json({ success: true, campaign, totalBusinesses: businesses.length, queuePosition: importQueue.length });
 });
 
 // === UPDATE ===

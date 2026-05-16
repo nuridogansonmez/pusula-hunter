@@ -67,7 +67,7 @@ function App() {
   // Import state
   const [importFiles, setImportFiles] = useState([]);
   const [importLoading, setImportLoading] = useState(false);
-  const [importSelected, setImportSelected] = useState('');
+  const [importSelected, setImportSelected] = useState(new Set());
   const [importCampaignName, setImportCampaignName] = useState('');
   const [importStatus, setImportStatus] = useState('');
   const [importUploading, setImportUploading] = useState(false);
@@ -208,29 +208,56 @@ function App() {
     markAsSent(phone);
   };
 
+  const toggleImportFile = (filename) => {
+    setImportSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(filename)) next.delete(filename);
+      else next.add(filename);
+      return next;
+    });
+  };
+
+  const selectAllImportFiles = () => {
+    if (importSelected.size === importFiles.length) {
+      setImportSelected(new Set());
+    } else {
+      setImportSelected(new Set(importFiles.map(f => f.filename)));
+    }
+  };
+
   const startImport = async () => {
-    if (!importSelected || !importCampaignName.trim()) {
-      setImportStatus('error:Lutfen dosya ve kampanya adi secin');
+    if (importSelected.size === 0) {
+      setImportStatus('error:Lutfen en az 1 dosya secin');
       return;
     }
     setImportUploading(true);
     setImportStatus('loading');
     try {
-      const res = await fetch(`${API}/import/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: importSelected, campaignName: importCampaignName.trim() })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setImportStatus('error:' + (data.error || 'Hata olustu'));
+      if (importSelected.size === 1) {
+        const filename = [...importSelected][0];
+        const name = importCampaignName.trim() || filename.replace('.json', '') + ' - Google Tarama';
+        const res = await fetch(`${API}/import/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename, campaignName: name })
+        });
+        const data = await res.json();
+        if (!res.ok) { setImportStatus('error:' + (data.error || 'Hata olustu')); }
+        else { setImportStatus('success:Kuyruga eklendi! ' + data.totalBusinesses + ' isletme'); }
       } else {
-        setImportStatus('success:' + data.totalBusinesses);
-        setImportCampaignName('');
-        setImportSelected('');
-        fetchCampaigns();
-        fetchStats();
+        const res = await fetch(`${API}/import/batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filenames: [...importSelected] })
+        });
+        const data = await res.json();
+        if (!res.ok) { setImportStatus('error:' + (data.error || 'Hata olustu')); }
+        else { setImportStatus('success:' + data.added.length + ' dosya kuyruga eklendi! Sirayla taranacak.'); }
       }
+      setImportCampaignName('');
+      setImportSelected(new Set());
+      fetchCampaigns();
+      fetchStats();
     } catch (err) {
       setImportStatus('error:' + err.message);
     } finally {
@@ -766,43 +793,48 @@ function App() {
                 <div className="import-loading">Dosyalar yukleniyor...</div>
               ) : importFiles.length === 0 ? (
                 <div className="import-empty">Dosya bulunamadi. Dizin kontrol edin.</div>
-              ) : (
+              ) : (<>
+                <div style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button className="btn btn-sm btn-secondary" onClick={selectAllImportFiles}>
+                    {importSelected.size === importFiles.length ? 'Secimi Kaldir' : 'Tumunu Sec'}
+                  </button>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {importSelected.size > 0 ? `${importSelected.size} dosya secili` : 'Dosya secin (birden fazla secilebilir)'}
+                  </span>
+                </div>
                 <div className="import-file-grid">
                   {importFiles.map(f => (
                     <div
                       key={f.filename}
-                      className={`import-file-card ${importSelected === f.filename ? 'selected' : ''}`}
-                      onClick={() => {
-                        setImportSelected(f.filename);
-                        if (!importCampaignName) {
-                          setImportCampaignName(f.filename.replace('.json', '') + ' - Google Tarama');
-                        }
-                      }}
+                      className={`import-file-card ${importSelected.has(f.filename) ? 'selected' : ''}`}
+                      onClick={() => toggleImportFile(f.filename)}
                     >
                       <div className="import-file-name">{f.filename.replace('.json', '')}</div>
                       <div className="import-file-count">{f.count} isletme</div>
                     </div>
                   ))}
                 </div>
-              )}
+              </>)}
 
               <div className="import-form-row">
+                {importSelected.size <= 1 && (
                 <div className="form-group" style={{ flex: 2 }}>
-                  <label>Kampanya Adi</label>
+                  <label>Kampanya Adi {importSelected.size > 1 && '(otomatik)'}</label>
                   <input
-                    placeholder="Ornek: Berberler - Google Tarama"
+                    placeholder="Bos birakilirsa dosya adindan olusturulur"
                     value={importCampaignName}
                     onChange={e => setImportCampaignName(e.target.value)}
                   />
                 </div>
+                )}
                 <div className="form-group" style={{ flex: 'none' }}>
                   <label>&nbsp;</label>
                   <button
                     className="btn btn-primary"
                     onClick={startImport}
-                    disabled={importUploading || !importSelected || !importCampaignName.trim()}
+                    disabled={importUploading || importSelected.size === 0}
                   >
-                    {importUploading ? 'Baslatiliyor...' : 'Ice Aktar ve Tara'}
+                    {importUploading ? 'Baslatiliyor...' : importSelected.size > 1 ? `${importSelected.size} Dosyayi Kuyruga Ekle` : 'Ice Aktar ve Tara'}
                   </button>
                 </div>
               </div>
